@@ -16,10 +16,13 @@ from scraper import scrape_channels, retrieve_channels
 from shared.db import PgRepository, create_db_string
 from shared.entities import Channel, Folder, Source
 from shared.logger import configure_logging
-from shared.models import ScrapeRequest, ScrapeResponse
+from shared.models import ScrapeRequest, ScrapeResponse, SourceOutput
 from shared.resources import SharedResources
 from shared.routes import ScraperRoutes
 from shared.utils import SHARED_CONFIG_PATH
+from shared.utils import DB_DATE_FORMAT
+from pydantic import TypeAdapter
+import json
 
 
 @asynccontextmanager
@@ -71,22 +74,25 @@ ctx = Context()
 
 
 @app.post(ScraperRoutes.SCRAPE)
-async def parse(request: ScrapeRequest) -> ScrapeResponse:
+async def scrape(request: ScrapeRequest) -> ScrapeResponse:
     logger.info("Started serving scrapping request")
-    entities, skipped_channel_ids = await scrape_channels(ctx, **request.model_dump())
+    output, skipped_channel_ids = await scrape_channels(ctx, **request.model_dump())
     # TODO(nrydanov): Need to add caching there in case all posts for required
     # time period are already stored in database (#137)
-    if entities:
-        await ctx.source_repository.add(entities, ignore_conflict=True)
+    if output:
+        source_adapter = TypeAdapter(Source)
 
-        def convert_to_output(x: Source):
+        def convert_to_entity(x: SourceOutput) -> Source:
             dumped = x.model_dump()
 
-            dumped["embeddings"] = eval(x.embeddings)
+            dumped["date"] = dumped["date"].strftime(DB_DATE_FORMAT)
+            dumped["embeddings"] = json.dumps(dumped["embeddings"])
 
-            return dumped
+            return source_adapter.validate_python(dumped)
 
-        output = list(map(convert_to_output, entities))
+        await ctx.source_repository.add(
+            list(map(convert_to_entity, output)), ignore_conflict=True
+        )
 
         logger.debug("Data was saved to database successfully")
         return ScrapeResponse(

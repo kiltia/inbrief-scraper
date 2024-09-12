@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 from concurrent.futures._base import TimeoutError
-from datetime import datetime
 from typing import List, Tuple
 
 from embedders import OpenAi, get_embedders
@@ -12,7 +11,7 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
 
 from shared.entities import Channel, Folder, Source
-from shared.utils import DATE_FORMAT, DB_DATE_FORMAT
+from shared.models import SourceOutput
 
 logger = logging.getLogger("scraper")
 
@@ -34,7 +33,7 @@ def get_worker(
         content = {
             "source_id": message.id,
             "text": message.message,
-            "date": message.date.strftime(DB_DATE_FORMAT),
+            "date": message.date,
             "reference": f"t.me/{channel_entity.username}/{message.id}",
             "channel_id": channel_entity.id,
             "embeddings": {},
@@ -89,10 +88,9 @@ def get_worker(
                 embeddings = emb.get_embeddings([message.message])[0]
             content["embeddings"].update({emb.get_label(): embeddings})
 
-        content["embeddings"] = json.dumps(content["embeddings"])
         logger.debug(f"Ended generating embeddings for {message.id}")
         logger.debug(f"Ended parsing message {message.id}")
-        return Source.parse_obj(content)
+        return SourceOutput.parse_obj(content)
 
     return get_content
 
