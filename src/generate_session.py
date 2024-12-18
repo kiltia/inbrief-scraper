@@ -13,4 +13,7 @@ with TelegramClient(
     creds.api_hash,
     system_version="4.16.30-vxCUSTOM",
 ) as client:
-    print(client.session.save())
+    # saves session string to .env
+
+    with open(".env", "a") as env_file:
+        env_file.write(f"session={client.session.save()}")
