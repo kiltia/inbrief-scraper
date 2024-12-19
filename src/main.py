@@ -2,8 +2,9 @@ import logging
 import os
 import uuid
 
+import faststream
 from databases import Database
-from faststream import ContextRepo, FastStream
+from faststream import ContextRepo, ExceptionMiddleware, FastStream
 from faststream.kafka import KafkaBroker
 from shared.db import IntervalRepository, PgRepository, create_db_string
 from shared.entities import Channel, Folder, ProcessedIntervals, Source
@@ -23,8 +24,20 @@ from scraper import scrape_channels
 
 KAFKA_HOST = os.environ.get("KAFKA_HOST", "kafka")
 
-broker = KafkaBroker(KAFKA_HOST)
+exc_middleware = ExceptionMiddleware()
+broker = KafkaBroker(KAFKA_HOST, middlewares=[exc_middleware])
 app = FastStream(broker)
+
+
+@exc_middleware.add_handler(Exception, publish=True)
+def error_handler(exc, message=faststream.Context()):
+    logging.error(exc)
+    return {
+        "state": ResponseState.FAILED,
+        "request_id": message.headers.get("request_id"),
+        "error": str(exc),
+        "error_repr": repr(exc),
+    }
 
 
 logger = logging.getLogger("scraper")
@@ -76,14 +89,13 @@ class Context:
 ctx = Context()
 
 
-@broker.publisher("inbrief.scraped.out.json")
+@broker.publisher("inbrief.scraper.out.json")
 @broker.subscriber("inbrief.scraper.in.json")
-async def scrape(
+async def scraper_consumer(
     request: ScrapeRequest,
+    request_id: uuid.UUID = faststream.Header(),
 ) -> ScrapeResponse:
     logger.info("Started serving scrapping request")
-
-    request_id = uuid.uuid4()
 
     actions = await scrape_channels(ctx, request, request_id)
 
