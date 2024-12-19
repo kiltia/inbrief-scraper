@@ -1,45 +1,38 @@
-FROM python:3.12 AS builder
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm AS builder
 
-ENV PIP_DEFAULT_TIMEOUT=200 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 
+WORKDIR /app
 
-ENV RYE_HOME="/opt/rye"
-ENV PATH="$RYE_HOME/shims:$PATH"
-ENV UV_HTTP_TIMEOUT=1200
-ENV WD_NAME=/app
-WORKDIR $WD_NAME
-RUN curl -sSf https://rye.astral.sh/get | RYE_INSTALL_OPTION="--yes" \
-                                          RYE_NO_AUTO_INSTALL=1  \
-                                          bash \
-&& rye config --set-bool behavior.use-uv=true \
-&& rye config --set-bool autosync=false
+ENV \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    PYTHONOPTIMIZE=1
 
+COPY shared /shared
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=scraper/uv.lock,target=uv.lock \
+    --mount=type=bind,source=scraper/pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=scraper/.python-version,target=.python-version \
+    uv sync --frozen --no-install-project --no-dev
 
-COPY scraper/.python-version* .python-version
-COPY scraper/README.md README.md
-COPY scraper/pyproject.toml pyproject.toml
-COPY scraper/requirements.lock* requirements.lock
+FROM python:3.13-slim AS runtime
 
-COPY openai_api openai_api
-RUN rye add openai_api --path openai_api
-COPY shared shared
-RUN rye add shared --path shared
+WORKDIR /app
 
-RUN rye sync --no-lock --no-dev
+ENV PATH=/app/bin:$PATH \
+    PYTHONOPTIMIZE=1 \
+    PYTHONFAULTHANDLER=1 \
+    PYTHONUNBUFFERED=1
 
-ENV PATH="$WD_NAME/.venv/bin:$PATH"
+ARG RELEASE
 
-FROM python:3.12-slim as runtime
+ENV RELEASE=${RELEASE}
 
-ENV WD_NAME=/app
-WORKDIR $WD_NAME
+ENV PATH=/app/.venv/bin:$PATH
 
-ENV PATH="$WD_NAME/.venv/bin:$PATH"
-ENV PYTHONPATH="$PYTHONPATH:$WD_NAME/.venv/lib/python3.12/site-packages"
-
-COPY --from=builder /opt/rye /opt/rye
-COPY --from=builder $WD_NAME/.venv .venv
-COPY --from=builder $WD_NAME/shared shared
-COPY --from=builder $WD_NAME/openai_api openai_api
+COPY --from=builder /app/.venv .venv
 COPY scraper/src src
-ENTRYPOINT ["uvicorn", "--app-dir", "src", "--host", "0.0.0.0", "main:app"]
+
+ENV PATH="$WD_NAME/.venv/bin/:$PATH"
+
+ENTRYPOINT ["faststream", "run", "--app-dir", "src", "main:app", "--host", "0.0.0.0"]

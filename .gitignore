@@ -1,6 +1,7 @@
-*.lock
 .env
 __pycache__
 sessions/*
 *.ropeproject
 cache
+.venv
+dist

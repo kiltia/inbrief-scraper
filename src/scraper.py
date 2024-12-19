@@ -2,30 +2,75 @@ import asyncio
 import json
 import logging
 from concurrent.futures._base import TimeoutError
-from typing import List, Tuple
+from datetime import datetime
+from uuid import UUID
 
-from embedders import OpenAi, get_embedders
+from shared.entities import Channel, Folder, ProcessedIntervals, Source
+from shared.models import ScrapeAction, ScrapeInfo, ScrapeRequest, SourceOutput
 from telethon.errors.rpcbaseerrors import BadRequestError
 from telethon.errors.rpcerrorlist import ChannelPrivateError, MsgIdInvalidError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
 
-from shared.entities import Channel, Folder, Source
-from shared.models import SourceOutput
-
 logger = logging.getLogger("scraper")
+
+
+def get_required_intervals(
+    overlaps: list[dict], l_bound: datetime, r_bound: datetime
+) -> tuple[ScrapeAction, list[tuple[datetime, datetime]]]:
+    if len(overlaps) > 0:
+        full_overlaps = list(
+            filter(
+                lambda x: x["l_bound"] <= l_bound and x["r_bound"] >= r_bound,
+                overlaps,
+            )
+        )
+
+        # Case 1: Requested interval completely cached
+        if len(full_overlaps) > 0:
+            return ScrapeAction.CACHED, []
+
+        action = ScrapeAction.PARTIAL_SCAN
+
+        # Case 2: Additional computations are needed
+        intersections = sorted(
+            overlaps, key=lambda x: (x["l_bound"], x["r_bound"])
+        )
+
+        logger.error(intersections)
+
+        required = []
+        if intersections[0]["l_bound"] > l_bound:
+            required.append((l_bound, intersections[0]["l_bound"]))
+        if intersections[-1]["r_bound"] < r_bound:
+            required.append((intersections[-1]["r_bound"], r_bound))
+        r_cur = intersections[0]["r_bound"]
+        for entry in intersections[1:]:
+            l_bound = entry["l_bound"]
+            r_bound = entry["r_bound"]
+            logger.error(f"l_bound: {l_bound}, r_bound: {r_bound}")
+
+            if l_bound > r_cur:
+                required.append((r_cur, l_bound))
+                r_cur = r_bound
+            else:
+                r_cur = max(r_cur, r_bound)
+    else:
+        action = ScrapeAction.FULL_SCAN
+        # Case 3: No cache found
+        required = [(l_bound, r_bound)]
+
+    return action, required
 
 
 def get_worker(
     channel_entity,
     ctx,
-    embedders,
     social: bool,
-    **kwargs,
 ):
     client = ctx.client
 
-    async def get_content(message) -> Source | None:
+    async def get_content(message) -> SourceOutput | None:
         if message.message in ["", None]:
             return None
         logger.debug(f"Started getting content for {message.id}")
@@ -33,10 +78,9 @@ def get_worker(
         content = {
             "source_id": message.id,
             "text": message.message,
-            "date": message.date,
+            "ts": message.date,
             "reference": f"t.me/{channel_entity.username}/{message.id}",
             "channel_id": channel_entity.id,
-            "embeddings": {},
             "views": message.views,
         }
         if social:
@@ -50,11 +94,11 @@ def get_worker(
                     if text is not None:
                         comments.append(text)
             except MsgIdInvalidError:
-                logger.warn(
+                logger.warning(
                     "Got invalid message ID while parsing, skipping..."
                 )
             except ValueError as e:
-                logger.warn(e)
+                logger.warning(e)
             content.update({"comments": comments})
             if message.reactions is None:
                 content.update({"reactions": []})
@@ -74,23 +118,8 @@ def get_worker(
 
             content["reactions"] = json.dumps(content["reactions"])
 
-        logger.debug(f"Started generating embeddings for {message.id}")
-        # TODO(nrydanov): Move embedding retrieval out of this function
-        # to enable batch processing on GPU to increase overall performance
-        for emb in embedders:
-            if isinstance(emb, OpenAi):
-                embeddings = (
-                    await emb.aget_embeddings(
-                        [message.message], ctx.openai_client
-                    )
-                )[0]
-            else:
-                embeddings = emb.get_embeddings([message.message])[0]
-            content["embeddings"].update({emb.get_label(): embeddings})
-
-        logger.debug(f"Ended generating embeddings for {message.id}")
         logger.debug(f"Ended parsing message {message.id}")
-        return SourceOutput.parse_obj(content)
+        return SourceOutput.model_validate(content)
 
     return get_content
 
@@ -98,16 +127,15 @@ def get_worker(
 async def get_content_from_channel(
     channel_entity,
     ctx,
-    embedders,
     end_date,
     offset_date=None,
     **kwargs,
-) -> List[Source]:
+) -> list[Source]:
     batch = []
     api_iterator = ctx.client.iter_messages(
         channel_entity, offset_date=offset_date
     )
-    get_content = get_worker(channel_entity, ctx, embedders, **kwargs)
+    get_content = get_worker(channel_entity, ctx, **kwargs)
     async for message in api_iterator:
         try:
             if message.date < end_date:
@@ -123,7 +151,7 @@ async def get_content_from_channel(
     return list(filter(lambda x: x is not None, batch))
 
 
-async def retrieve_channels(ctx, chat_folder_link: str):
+async def retrieve_channels(ctx, chat_folder_link: str) -> list[int]:
     logger.debug(f"Retrieving channels from link: {chat_folder_link}")
 
     slug = chat_folder_link.split("/")[-1]
@@ -151,16 +179,18 @@ async def retrieve_channels(ctx, chat_folder_link: str):
 
 async def scrape_channels(
     ctx,
-    channels: List[int],
-    required_embedders: List[str],
-    **parse_args,
-) -> Tuple[List[Source], List[int]]:
+    request: ScrapeRequest,
+    request_id: UUID | None = None,
+) -> dict[int, ScrapeInfo]:
     logger.debug("Getting all required embedders")
 
     client = ctx.client
-    embedders = get_embedders(required_embedders)
-    result: List[Source] = []
-    skipped_channel_ids: List[int] = []
+    skipped_channel_ids: list[int] = []
+    result: dict[int, ScrapeInfo] = {}
+    end_date = request.end_date
+    offset_date = request.offset_date
+
+    channels = await retrieve_channels(ctx, request.chat_folder_link)
     for channel_id in channels:
         try:
             channel_entity = await client.get_entity(channel_id)
@@ -170,10 +200,13 @@ async def scrape_channels(
                 f"and we aren't allowed to access it, skipping."
             )
             skipped_channel_ids.append(channel_id)
+            result[channel_id] = ScrapeInfo(
+                action=ScrapeAction.FAILED, count=0
+            )
             continue
 
         info = (await client(GetFullChannelRequest(channel_id))).full_chat
-        logger.debug(f"Parsing channel: {channel_entity.id}")
+        logger.debug(f"Scraping channel: {channel_entity.id}")
 
         channel = Channel(
             channel_id=info.id,
@@ -184,12 +217,42 @@ async def scrape_channels(
         await ctx.channel_repository.add_or_update(
             channel, fields=["title", "about", "subscribers"]
         )
-        response = await get_content_from_channel(
-            channel_entity,
-            ctx,
-            embedders,
-            **parse_args,
-        )
-        result = result + response
 
-    return result, skipped_channel_ids
+        overlaps = await ctx.intervals_repository.get_intersections(
+            end_date, offset_date or datetime.now(), channel_id
+        )
+
+        logger.debug(f"Got overlaps: {overlaps}")
+
+        action, required = get_required_intervals(
+            overlaps, end_date, offset_date or datetime.now().astimezone()
+        )
+
+        logger.debug(f"Evaluated required intervals: {required}")
+
+        for l_bound, r_bound in required:
+            logger.debug(f"Processing interval {l_bound} - {r_bound}")
+            response = await get_content_from_channel(
+                channel_entity,
+                ctx,
+                end_date=l_bound,
+                offset_date=r_bound,
+                social=request.social,
+            )
+            logger.debug(
+                f"Got response for interval {l_bound} - {r_bound}, count: {len(response)}"
+            )
+
+            await ctx.source_repository.add(response, ignore_conflict=True)
+            await ctx.intervals_repository.add(
+                ProcessedIntervals(
+                    l_bound=l_bound,
+                    r_bound=r_bound,
+                    request_id=request_id,
+                    channel_id=channel_id,
+                )
+            )
+
+            result[channel_id] = ScrapeInfo(action=action, count=len(response))
+
+    return result

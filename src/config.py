@@ -1,11 +1,19 @@
-from pydantic_settings import BaseSettings
+from pydantic import BaseModel
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from shared.db import DatabaseConfig
 
 
-class Credentials(BaseSettings):
-    session: str = ""
+class TelegramCredentials(BaseModel):
     api_hash: str
     api_id: str
+    session: str
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+
+class Config(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_nested_delimiter="__",
+    )
+
+    database: DatabaseConfig
+    telegram: TelegramCredentials
