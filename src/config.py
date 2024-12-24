@@ -9,6 +9,16 @@ class TelegramCredentials(BaseModel):
     session: str
 
 
+class RedisConfig(BaseModel):
+    host: str
+    port: int
+
+
+class ExporterConfig(BaseModel):
+    required_exporters: list[str]
+    redis: RedisConfig
+
+
 class Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -17,3 +27,4 @@ class Config(BaseSettings):
 
     database: DatabaseConfig
     telegram: TelegramCredentials
+    exporters: ExporterConfig

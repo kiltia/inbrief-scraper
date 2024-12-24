@@ -5,12 +5,13 @@ from concurrent.futures._base import TimeoutError
 from datetime import datetime
 from uuid import UUID
 
-from shared.entities import Channel, Folder, ProcessedIntervals, Source
-from shared.models import ScrapeAction, ScrapeInfo, ScrapeRequest, SourceOutput
 from telethon.errors.rpcbaseerrors import BadRequestError
 from telethon.errors.rpcerrorlist import ChannelPrivateError, MsgIdInvalidError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
+
+from entities import Channel, Folder, ProcessedIntervals, Source
+from models import ResponsePayload, ScrapeAction, ScrapeInfo, ScrapeRequest
 
 logger = logging.getLogger("scraper")
 
@@ -37,8 +38,6 @@ def get_required_intervals(
             overlaps, key=lambda x: (x["l_bound"], x["r_bound"])
         )
 
-        logger.error(intersections)
-
         required = []
         if intersections[0]["l_bound"] > l_bound:
             required.append((l_bound, intersections[0]["l_bound"]))
@@ -48,7 +47,6 @@ def get_required_intervals(
         for entry in intersections[1:]:
             l_bound = entry["l_bound"]
             r_bound = entry["r_bound"]
-            logger.error(f"l_bound: {l_bound}, r_bound: {r_bound}")
 
             if l_bound > r_cur:
                 required.append((r_cur, l_bound))
@@ -70,7 +68,7 @@ def get_worker(
 ):
     client = ctx.client
 
-    async def get_content(message) -> SourceOutput | None:
+    async def get_content(message) -> Source | None:
         if message.message in ["", None]:
             return None
         logger.debug(f"Started getting content for {message.id}")
@@ -119,7 +117,7 @@ def get_worker(
             content["reactions"] = json.dumps(content["reactions"])
 
         logger.debug(f"Ended parsing message {message.id}")
-        return SourceOutput.model_validate(content)
+        return Source.model_validate(content)
 
     return get_content
 
@@ -191,6 +189,7 @@ async def scrape_channels(
     offset_date = request.offset_date
 
     channels = await retrieve_channels(ctx, request.chat_folder_link)
+    gathered_sources: list[Source] = []
     for channel_id in channels:
         try:
             channel_entity = await client.get_entity(channel_id)
@@ -242,6 +241,7 @@ async def scrape_channels(
             logger.debug(
                 f"Got response for interval {l_bound} - {r_bound}, count: {len(response)}"
             )
+            gathered_sources.extend(response)
 
             await ctx.source_repository.add(response, ignore_conflict=True)
             await ctx.intervals_repository.add(
@@ -255,4 +255,5 @@ async def scrape_channels(
 
             result[channel_id] = ScrapeInfo(action=action, count=len(response))
 
-    return result
+    # TODO(nrydanov): Add cached sources to payload output
+    return ResponsePayload(cached=[], gathered=gathered_sources), result

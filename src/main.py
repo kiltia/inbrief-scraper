@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import uuid
@@ -7,19 +8,20 @@ from databases import Database
 from faststream import ContextRepo, ExceptionMiddleware, FastStream
 from faststream.kafka import KafkaBroker
 from shared.db import IntervalRepository, PgRepository, create_db_string
-from shared.entities import Channel, Folder, ProcessedIntervals, Source
 from shared.logger import configure_logging
-from shared.models import (
-    ResponseState,
-    ScrapeRequest,
-    ScrapeResponse,
-)
+from shared.models.api import ResponseState
 from shared.resources import SharedResources
 from shared.utils import SHARED_CONFIG_PATH
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 import config
+from entities import Channel, Folder, ProcessedIntervals, Source
+from exporters import get_exporters, init_exporters
+from models import (
+    ScrapeRequest,
+    ScrapeResponse,
+)
 from scraper import scrape_channels
 
 KAFKA_HOST = os.environ.get("KAFKA_HOST", "kafka")
@@ -28,10 +30,12 @@ exc_middleware = ExceptionMiddleware()
 broker = KafkaBroker(KAFKA_HOST, middlewares=[exc_middleware])
 app = FastStream(broker)
 
+logger = logging.getLogger("scraper")
+
 
 @exc_middleware.add_handler(Exception, publish=True)
 def error_handler(exc, message=faststream.Context()):
-    logging.error(exc)
+    logger.error(repr(exc))
     return {
         "state": ResponseState.FAILED,
         "request_id": message.headers.get("request_id"),
@@ -40,12 +44,11 @@ def error_handler(exc, message=faststream.Context()):
     }
 
 
-logger = logging.getLogger("scraper")
-
-
 @app.on_startup
 async def startup(context: ContextRepo):
     configure_logging()
+    logger.info("Started initializing scraper")
+    ctx.init_exporters()
     await ctx.init_db()
     await ctx.client.start()
 
@@ -85,6 +88,9 @@ class Context:
     async def dispose_db(self):
         await self.pg.disconnect()
 
+    def init_exporters(self):
+        return init_exporters(self.config.exporters)
+
 
 ctx = Context()
 
@@ -97,7 +103,18 @@ async def scraper_consumer(
 ) -> ScrapeResponse:
     logger.info("Started serving scrapping request")
 
-    actions = await scrape_channels(ctx, request, request_id)
+    payload, actions = await scrape_channels(ctx, request, request_id)
+
+    exporters = get_exporters(request.exporters)
+
+    # TODO(nrydanov): Add cached sources to payload?
+    payload_json = json.dumps(
+        list(map(lambda x: x.model_dump(), payload.gathered)), default=str
+    )
+
+    for exporter in exporters:
+        logger.info(f"Exporting to {exporter.get_label()}")
+        exporter.export(request_id, payload_json)
 
     return ScrapeResponse(
         request_id=request_id,
