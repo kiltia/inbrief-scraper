@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import traceback
 import uuid
 
 import faststream
@@ -17,7 +18,7 @@ from telethon.sessions import StringSession
 
 import config
 from entities import Channel, Folder, ProcessedIntervals, Source
-from exporters import get_exporters, init_exporters
+from exporters import init_exporters
 from models import (
     ScrapeRequest,
     ScrapeResponse,
@@ -35,7 +36,8 @@ logger = logging.getLogger("scraper")
 
 @exc_middleware.add_handler(Exception, publish=True)
 def error_handler(exc, message=faststream.Context()):
-    logger.error(repr(exc))
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    logger.error(tb)
     return {
         "state": ResponseState.FAILED,
         "request_id": message.headers.get("request_id"),
@@ -89,7 +91,7 @@ class Context:
         await self.pg.disconnect()
 
     def init_exporters(self):
-        return init_exporters(self.config.exporters)
+        self.exporters = init_exporters(self.config.exporters)
 
 
 ctx = Context()
@@ -105,14 +107,12 @@ async def scraper_consumer(
 
     payload, actions = await scrape_channels(ctx, request, request_id)
 
-    exporters = get_exporters(request.exporters)
-
     # TODO(nrydanov): Add cached sources to payload?
     payload_json = json.dumps(
         list(map(lambda x: x.model_dump(), payload.gathered)), default=str
     )
 
-    for exporter in exporters:
+    for exporter in ctx.exporters:
         logger.info(f"Exporting to {exporter.get_label()}")
         exporter.export(request_id, payload_json)
 

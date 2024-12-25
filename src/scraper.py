@@ -65,6 +65,7 @@ def get_worker(
     channel_entity,
     ctx,
     social: bool,
+    request_id: UUID,
 ):
     client = ctx.client
 
@@ -80,6 +81,7 @@ def get_worker(
             "reference": f"t.me/{channel_entity.username}/{message.id}",
             "channel_id": channel_entity.id,
             "views": message.views,
+            "request_id": request_id,
         }
         if social:
             logger.debug(f"Started getting social content for {message.id}")
@@ -159,12 +161,10 @@ async def retrieve_channels(ctx, chat_folder_link: str) -> list[int]:
         entity = Folder(chat_folder_link=chat_folder_link, channels=ids)
 
         await ctx.folder_repository.add_or_update(entity, ["channels"])
-        logger.info(
-            f"Successful update channels from link: {chat_folder_link}"
-        )
+        logger.debug(f"Updated channels from link: {chat_folder_link}")
     except BadRequestError:
-        logger.info(
-            f"Warning when updating channels from link: {chat_folder_link}"
+        logger.warn(
+            f"An error occured when updating channels from link: {chat_folder_link}"
         )
         entity = (
             await ctx.folder_repository.get(
@@ -237,6 +237,7 @@ async def scrape_channels(
                 end_date=l_bound,
                 offset_date=r_bound,
                 social=request.social,
+                request_id=request_id,
             )
             logger.debug(
                 f"Got response for interval {l_bound} - {r_bound}, count: {len(response)}"

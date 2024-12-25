@@ -2,11 +2,12 @@ from datetime import datetime
 from typing import ClassVar
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing_extensions import Annotated
 
 
 class Entity(BaseModel):
-    pass
+   created_at: Annotated[datetime, Field(default_factory=datetime.now)]
 
 
 class Source(Entity):
@@ -19,12 +20,13 @@ class Source(Entity):
     comments: list | None = None
     reactions: str | None = None
     views: int
+    request_id: UUID | None = None
 
     _table_name: ClassVar[str] = "source"
     _pk: ClassVar[str] = "source_id"
 
 
-class Channel(BaseModel):
+class Channel(Entity):
     channel_id: int
     title: str
     about: str

@@ -11,14 +11,11 @@ logger = logging.getLogger("scraper")
 class BaseExporter:
     @classmethod
     def get_label(self):
-        return Case.to_kebab(self.__name__)
-
-
-exporters: list[BaseExporter] = []
+        return Case.to_kebab(self.__name__).removesuffix("-exporter")
 
 
 def init_exporters(config: ExporterConfig):
-    global exporters
+    exporters: list[BaseExporter] = []
     required_exporters = config.required_exporters
     candidates = BaseExporter.__subclasses__()
     logger.info(f"Required exporters: {required_exporters}")
@@ -36,16 +33,7 @@ def init_exporters(config: ExporterConfig):
             continue
 
         logger.info(f"Finished loading {exporter.get_label()}")
-
-
-def get_exporters(names: list[str]) -> list[BaseExporter]:
-    global exporters
-    if names is None:
-        return exporters
-    required = list(
-        filter(lambda entry: entry.get_label() in names, exporters)
-    )
-    return required
+    return exporters
 
 
 class RedisExporter(BaseExporter):
@@ -59,3 +47,12 @@ class RedisExporter(BaseExporter):
             str(request_id),
             json_dump,
         )
+
+
+# TODO(nrydanov): Add S3 exporter
+class S3Exporter(BaseExporter):
+    pass
+
+    @classmethod
+    def get_label(self):
+        return "s3"
