@@ -1,4 +1,5 @@
 import logging
+from uuid import UUID
 
 import redis
 from rb_tocase import Case
@@ -10,8 +11,14 @@ logger = logging.getLogger("scraper")
 
 class BaseExporter:
     @classmethod
-    def get_label(self):
-        return Case.to_kebab(self.__name__).removesuffix("-exporter")
+    def get_label(cls):
+        return Case.to_kebab(cls.__name__).removesuffix("-exporter")
+
+    def export(self, request_id: UUID, json_dump: str):
+        raise NotImplementedError
+
+    def __init__(self, _: ExporterConfig):
+        pass
 
 
 def init_exporters(config: ExporterConfig):
@@ -50,9 +57,17 @@ class RedisExporter(BaseExporter):
 
 
 # TODO(nrydanov): Add S3 exporter
-class S3Exporter(BaseExporter):
-    pass
+class JsonExporter(BaseExporter):
+    def __init__(self, config: ExporterConfig):
+        from pathlib import Path
+
+        self.path = config.json_exporter.path
+        Path(self.path).mkdir(parents=True, exist_ok=True)
 
     @classmethod
-    def get_label(self):
-        return "s3"
+    def get_label(cls):
+        return "json"
+
+    def export(self, request_id, json_dump):
+        with open(f"{self.path}/{request_id}.json", "w") as f:
+            f.write(json_dump)

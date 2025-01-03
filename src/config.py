@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from shared.db import DatabaseConfig
 
@@ -14,9 +14,14 @@ class RedisConfig(BaseModel):
     port: int
 
 
+class JsonConfig(BaseModel):
+    path: str
+
+
 class ExporterConfig(BaseModel):
     required_exporters: list[str]
     redis: RedisConfig
+    json_exporter: JsonConfig = Field(alias="json")
 
 
 class Config(BaseSettings):
