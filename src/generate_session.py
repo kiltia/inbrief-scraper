@@ -3,9 +3,9 @@
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-from config import Credentials
+from config import Config
 
-creds = Credentials()
+creds = Config().telegram
 
 with TelegramClient(
     StringSession(),
@@ -14,4 +14,4 @@ with TelegramClient(
     system_version="4.16.30-vxCUSTOM",
 ) as client:
     with open(".env", "a") as env_file:
-        env_file.write(f"INBRIEF_SCRAPER__SESSION={client.session.save()}")
+        env_file.write(f"TELEGRAM__SESSION={client.session.save()}")
