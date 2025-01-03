@@ -6,7 +6,7 @@ import uuid
 
 import faststream
 from faststream import ContextRepo, ExceptionMiddleware, FastStream
-from faststream.kafka import KafkaBroker
+from faststream.kafka import KafkaBroker, KafkaMessage
 from shared.logger import configure_logging
 from shared.models.api import ResponseState
 
@@ -54,9 +54,12 @@ async def shutdown(_: ContextRepo):
 
 
 @broker.publisher("inbrief.scraper.out.json")
-@broker.subscriber("inbrief.scraper.in.json")
+@broker.subscriber(
+    "inbrief.scraper.in.json", auto_commit=False, group_id="scraper"
+)
 async def scraper_consumer(
     request: ScrapeRequest,
+    msg: KafkaMessage,
     request_id: uuid.UUID = faststream.Header(),
 ) -> ScrapeResponse:
     logger.info("Started serving scrapping request")
@@ -70,6 +73,8 @@ async def scraper_consumer(
     for exporter in ctx.exporters:
         logger.info(f"Exporting to {exporter.get_label()}")
         exporter.export(request_id, payload_json)
+
+    await msg.ack()
 
     return ScrapeResponse(
         request_id=request_id,
