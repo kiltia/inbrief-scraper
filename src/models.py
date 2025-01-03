@@ -1,7 +1,8 @@
 from datetime import datetime
 from enum import Enum
+from typing import Annotated
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from shared.models.api import BaseRequest, BaseResponse
 
 from entities import Source
@@ -9,8 +10,10 @@ from entities import Source
 
 class ScrapeRequest(BaseRequest):
     chat_folder_link: str = "https://t.me/addlist/W9JQ42l78Kc5MTAy"
-    offset_date: datetime | None = None
-    end_date: datetime
+    right_bound: Annotated[
+        datetime, Field(default_factory=lambda _: datetime.now().astimezone())
+    ]
+    left_bound: datetime
     social: bool = False
     exporters: list[str] = []
 

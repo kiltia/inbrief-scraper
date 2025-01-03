@@ -5,13 +5,20 @@ from concurrent.futures._base import TimeoutError
 from datetime import datetime
 from uuid import UUID
 
+from pydantic import TypeAdapter
 from telethon.errors.rpcbaseerrors import BadRequestError
 from telethon.errors.rpcerrorlist import ChannelPrivateError, MsgIdInvalidError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
 
+from context import Context
 from entities import Channel, Folder, ProcessedIntervals, Source
-from models import ResponsePayload, ScrapeAction, ScrapeInfo, ScrapeRequest
+from models import (
+    ResponsePayload,
+    ScrapeAction,
+    ScrapeInfo,
+    ScrapeRequest,
+)
 
 logger = logging.getLogger("scraper")
 
@@ -163,7 +170,7 @@ async def retrieve_channels(ctx, chat_folder_link: str) -> list[int]:
         await ctx.folder_repository.add_or_update(entity, ["channels"])
         logger.debug(f"Updated channels from link: {chat_folder_link}")
     except BadRequestError:
-        logger.warn(
+        logger.warning(
             f"An error occured when updating channels from link: {chat_folder_link}"
         )
         entity = (
@@ -176,20 +183,21 @@ async def retrieve_channels(ctx, chat_folder_link: str) -> list[int]:
 
 
 async def scrape_channels(
-    ctx,
+    ctx: Context,
     request: ScrapeRequest,
-    request_id: UUID | None = None,
-) -> dict[int, ScrapeInfo]:
+    request_id: UUID,
+) -> tuple[ResponsePayload, dict[int, ScrapeInfo]]:
     logger.debug("Getting all required embedders")
 
     client = ctx.client
     skipped_channel_ids: list[int] = []
     result: dict[int, ScrapeInfo] = {}
-    end_date = request.end_date
-    offset_date = request.offset_date
+    left_bound = request.left_bound
+    right_bound = request.right_bound
 
     channels = await retrieve_channels(ctx, request.chat_folder_link)
     gathered_sources: list[Source] = []
+    cached_sources: list[Source] = []
     for channel_id in channels:
         try:
             channel_entity = await client.get_entity(channel_id)
@@ -206,7 +214,6 @@ async def scrape_channels(
 
         info = (await client(GetFullChannelRequest(channel_id))).full_chat
         logger.debug(f"Scraping channel: {channel_entity.id}")
-
         channel = Channel(
             channel_id=info.id,
             title=channel_entity.title,
@@ -218,13 +225,13 @@ async def scrape_channels(
         )
 
         overlaps = await ctx.intervals_repository.get_intersections(
-            end_date, offset_date or datetime.now(), channel_id
+            left_bound, right_bound or datetime.now(), channel_id
         )
 
         logger.debug(f"Got overlaps: {overlaps}")
 
         action, required = get_required_intervals(
-            overlaps, end_date, offset_date or datetime.now().astimezone()
+            overlaps, left_bound, right_bound
         )
 
         logger.debug(f"Evaluated required intervals: {required}")
@@ -254,7 +261,19 @@ async def scrape_channels(
                 )
             )
 
-            result[channel_id] = ScrapeInfo(action=action, count=len(response))
+            cached = TypeAdapter(list[Source]).validate_python(
+                await ctx.source_repository.get_cached(
+                    channel_id, left_bound, right_bound
+                )
+            )
+
+            cached_sources.extend(cached)
+            result[channel_id] = ScrapeInfo(
+                action=action,
+                count=len(response),
+            )
 
     # TODO(nrydanov): Add cached sources to payload output
-    return ResponsePayload(cached=[], gathered=gathered_sources), result
+    return ResponsePayload(
+        cached=cached_sources, gathered=gathered_sources
+    ), result

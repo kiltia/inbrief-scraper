@@ -5,20 +5,12 @@ import traceback
 import uuid
 
 import faststream
-from databases import Database
 from faststream import ContextRepo, ExceptionMiddleware, FastStream
 from faststream.kafka import KafkaBroker
-from shared.db import IntervalRepository, PgRepository, create_db_string
 from shared.logger import configure_logging
 from shared.models.api import ResponseState
-from shared.resources import SharedResources
-from shared.utils import SHARED_CONFIG_PATH
-from telethon import TelegramClient
-from telethon.sessions import StringSession
 
-import config
-from entities import Channel, Folder, ProcessedIntervals, Source
-from exporters import init_exporters
+from context import ctx
 from models import (
     ScrapeRequest,
     ScrapeResponse,
@@ -47,7 +39,7 @@ def error_handler(exc, message=faststream.Context()):
 
 
 @app.on_startup
-async def startup(context: ContextRepo):
+async def startup(_: ContextRepo):
     configure_logging()
     logger.info("Started initializing scraper")
     ctx.init_exporters()
@@ -56,45 +48,9 @@ async def startup(context: ContextRepo):
 
 
 @app.on_shutdown
-async def shutdown(context: ContextRepo):
+async def shutdown(_: ContextRepo):
     ctx.client.disconnect()
     await ctx.dispose_db()
-
-
-class Context:
-    def __init__(self):
-        self.config = config.Config()
-        self.creds = self.config.telegram
-        self.client = TelegramClient(
-            StringSession(self.creds.session),
-            self.creds.api_id,
-            self.creds.api_hash,
-            system_version="4.16.30-vxCUSTOM",
-        )
-        self.shared_settings = SharedResources(
-            f"{SHARED_CONFIG_PATH}/settings.json"
-        )
-        self.pg = Database(
-            create_db_string(self.config.database),
-        )
-        self.folder_repository = PgRepository(self.pg, Folder)
-        self.source_repository = PgRepository(self.pg, Source)
-        self.channel_repository = PgRepository(self.pg, Channel)
-        self.intervals_repository = IntervalRepository(
-            self.pg, ProcessedIntervals
-        )
-
-    async def init_db(self):
-        await self.pg.connect()
-
-    async def dispose_db(self):
-        await self.pg.disconnect()
-
-    def init_exporters(self):
-        self.exporters = init_exporters(self.config.exporters)
-
-
-ctx = Context()
 
 
 @broker.publisher("inbrief.scraper.out.json")
@@ -107,9 +63,8 @@ async def scraper_consumer(
 
     payload, actions = await scrape_channels(ctx, request, request_id)
 
-    # TODO(nrydanov): Add cached sources to payload?
     payload_json = json.dumps(
-        list(map(lambda x: x.model_dump(), payload.gathered)), default=str
+        payload.model_dump(), default=str, sort_keys=True, ensure_ascii=False
     )
 
     for exporter in ctx.exporters:

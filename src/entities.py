@@ -3,11 +3,11 @@ from typing import ClassVar
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-from typing_extensions import Annotated
+from typing_extensions import Annotated, Optional
 
 
 class Entity(BaseModel):
-   created_at: Annotated[datetime, Field(default_factory=datetime.now)]
+   created_at: Annotated[Optional[datetime], Field(default_factory=datetime.now)] = None
 
 
 class Source(Entity):
